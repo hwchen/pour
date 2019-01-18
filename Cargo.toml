@@ -1,0 +1,10 @@
+[package]
+authors = ["Walther Chen <walther.chen@gmail.com>"]
+edition = "2018"
+name = "pour"
+version = "0.1.0"
+
+[dependencies]
+failure = "0.1.5"
+reqwest = "0.9.7"
+structopt = "0.2.14"
