@@ -1,5 +1,5 @@
-use failure::{Error, format_err};
 use reqwest::{Request, Url};
+use snafu::{Snafu, ResultExt, OptionExt};
 use std::fs;
 use std::iter;
 use std::path::PathBuf;
@@ -15,11 +15,13 @@ fn main() -> Result<(), Error> {
     // first build setlist
     // TODO make url conflict with file
     let req_list: Vec<_> = if let Some(f) = opt.file {
-        let buf = fs::read_to_string(f)?;
+        let buf = fs::read_to_string(&f)
+            .context(ReadConfigFile { path: f })?;
 
         let url_set = buf.lines()
             .map(|line| {
                 line.parse::<Url>()
+                    .context(ParseUrl { input: line })
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -35,8 +37,9 @@ fn main() -> Result<(), Error> {
 
         urls
     } else {
-        let url = opt.url.ok_or_else(||format_err!("url to test is required"))?;
-        let url: Url = url.parse()?;
+        let url = opt.url.context(MissingUrl)?;
+        let url: Url = url.parse()
+            .context(ParseUrl { input: url })?;
 
         let urls = iter::repeat(url).take(opt.n);
         urls.map(|url| {
@@ -61,7 +64,7 @@ fn main() -> Result<(), Error> {
         for req in req_list {
             let client = client.clone();
             let handle = thread::spawn(move || {
-                request(&client, req).expect("request failed");
+                exec_request(&client, req).expect("request failed");
             });
 
             handles.push(handle);
@@ -72,19 +75,20 @@ fn main() -> Result<(), Error> {
         }
     } else {
         for req in req_list {
-            request(&client, req)?;
+            exec_request(&client, req)
+                .context(RequestExec)?;
         }
     }
 
     Ok(())
 }
 
-fn request(client: &reqwest::Client, req: Request) -> Result<(), Error> {
+fn exec_request(client: &reqwest::Client, req: Request) -> Result<(), reqwest::Error> {
 
     let profile_url = req.url().to_owned();
 
     let start = Instant::now();
-    let mut res = client.execute(req).expect("Could not send req");
+    let mut res = client.execute(req)?;
     let end = start.elapsed();
 
     println!("{}.{:03}s, {}, {}",end.as_secs(), end.subsec_millis(), res.status(), profile_url);
@@ -119,4 +123,20 @@ struct CliOpt {
     #[structopt(name="async", short="a", long="async")]
     #[structopt(global=true)]
     asynchronous: bool,
+}
+
+
+#[derive(Debug, Snafu)]
+pub enum Error {
+    #[snafu(display("Error reading config file {}: {}", path.display(), source))]
+    ReadConfigFile { source: std::io::Error, path: PathBuf},
+
+    #[snafu(display("Missing url to test"))]
+    MissingUrl,
+
+    #[snafu(display("Error parsing url {}: {}", input, source))]
+    ParseUrl { source: reqwest::UrlError, input: String },
+
+    #[snafu(display("Error executing request: {}", source))]
+    RequestExec { source: reqwest::Error },
 }
