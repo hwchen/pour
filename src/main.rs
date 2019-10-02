@@ -1,16 +1,23 @@
-use reqwest::{Request, Url};
+use hyper::{Client, Request, Uri};
+use hyper_tls::HttpsConnector;
 use snafu::{Snafu, ResultExt, OptionExt};
 use std::fs;
 use std::iter;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use std::thread;
 use structopt::StructOpt;
 
-fn main() -> Result<(), Error> {
+#[tokio::main]
+async fn main() -> Result<(), Error> {
     let opt = CliOpt::from_args();
 
     let timeout_sec = opt.timeout;
+        //.timeout(Duration::from_millis(timeout_sec * 1000))
+
+    // Build Client
+    let https = HttpsConnector::new().expect("Failed to build https connector");
+    let client = Client::builder()
+        .build::<_, hyper::Body>(https);
 
     // first build setlist
     // TODO make url conflict with file
@@ -20,7 +27,7 @@ fn main() -> Result<(), Error> {
 
         let url_set = buf.lines()
             .map(|line| {
-                line.parse::<Url>()
+                line.parse::<Uri>()
                     .context(ParseUrl { input: line })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -28,9 +35,8 @@ fn main() -> Result<(), Error> {
         let urls = iter::repeat(url_set.clone()).take(opt.n)
             .flat_map(|url_set| url_set.into_iter())
             .map(|url| {
-                reqwest::Client::new()
-                    .get(url)
-                    .build()
+                Request::get(url)
+                    .body(hyper::Body::default())
                     .expect("Failed building request")
             })
             .collect();
@@ -38,44 +44,32 @@ fn main() -> Result<(), Error> {
         urls
     } else {
         let url = opt.url.context(MissingUrl)?;
-        let url: Url = url.parse()
+        let url: Uri = url.parse()
             .context(ParseUrl { input: url })?;
 
         let urls = iter::repeat(url).take(opt.n);
         urls.map(|url| {
-            reqwest::Client::new()
-                .get(url)
+                Request::get(url)
                 //.basic_auth(user_pass[0], Some(user_pass[1]))
-                .build()
+                .body(hyper::Body::default())
                 .expect("Failed building request")
             })
             .collect()
     };
 
-    // Now perform calls
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(timeout_sec * 1000))
-        .build()
-        .expect("Could not build client");
-
-
+    // perform calls
     if opt.asynchronous {
-        let mut handles = vec![];
         for req in req_list {
             let client = client.clone();
-            let handle = thread::spawn(move || {
-                exec_request(&client, req).expect("request failed");
+            tokio::spawn(async move {
+                exec_request(&client, req).await
+                    .expect("Failed to execute request");
             });
-
-            handles.push(handle);
-        }
-
-        for handle in handles {
-            handle.join().expect("error joining");
         }
     } else {
         for req in req_list {
             exec_request(&client, req)
+                .await
                 .context(RequestExec)?;
         }
     }
@@ -83,17 +77,19 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-fn exec_request(client: &reqwest::Client, req: Request) -> Result<(), reqwest::Error> {
+async fn exec_request<C>(client: &Client<C, hyper::Body>, req: Request<hyper::Body>) -> Result<(), hyper::Error>
+    where C: hyper::client::connect::Connect + 'static
+{
 
-    let profile_url = req.url().to_owned();
+    let profile_url = req.uri().to_owned();
 
     let start = Instant::now();
-    let mut res = client.execute(req)?;
+    let res = client.request(req).await?;
     let end = start.elapsed();
 
     println!("{}.{:03}s, {}, {}",end.as_secs(), end.subsec_millis(), res.status(), profile_url);
     if res.status().is_server_error() {
-        println!("{}", res.text()?)
+        println!("{}", res.status())
     }
     // if verbose, print the page.
     Ok(())
@@ -135,8 +131,8 @@ pub enum Error {
     MissingUrl,
 
     #[snafu(display("Error parsing url {}: {}", input, source))]
-    ParseUrl { source: reqwest::UrlError, input: String },
+    ParseUrl { source: http::uri::InvalidUri, input: String },
 
     #[snafu(display("Error executing request: {}", source))]
-    RequestExec { source: reqwest::Error },
+    RequestExec { source: hyper::Error },
 }
