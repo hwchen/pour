@@ -59,12 +59,28 @@ async fn main() -> Result<(), Error> {
 
     // perform calls
     if opt.asynchronous {
+        let tasks = req_list.len();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(tasks);
+
         for req in req_list {
+            // doesn't use connection pool, just opens a ton of sockets.
             let client = client.clone();
+            let mut tx = tx.clone();
             tokio::spawn(async move {
                 exec_request(&client, req).await
                     .expect("Failed to execute request");
+                let _ = tx.send(1).await;
             });
+        }
+
+        let mut completed = 0usize;
+        while completed < tasks {
+            match rx.recv().await {
+                None => panic!("Failed to complete request"),
+                Some(v) => {
+                    completed += v;
+                }
+            }
         }
     } else {
         for req in req_list {
@@ -80,7 +96,6 @@ async fn main() -> Result<(), Error> {
 async fn exec_request<C>(client: &Client<C, hyper::Body>, req: Request<hyper::Body>) -> Result<(), hyper::Error>
     where C: hyper::client::connect::Connect + 'static
 {
-
     let profile_url = req.uri().to_owned();
 
     let start = Instant::now();
