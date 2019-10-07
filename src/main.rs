@@ -11,6 +11,10 @@ use structopt::StructOpt;
 async fn main() -> Result<(), Error> {
     let opt = CliOpt::from_args();
 
+    if opt.n == 0 {
+        panic!("Cannot repeat 0 times");
+    }
+
     let timeout_sec = opt.timeout;
         //.timeout(Duration::from_millis(timeout_sec * 1000))
 
@@ -21,45 +25,37 @@ async fn main() -> Result<(), Error> {
 
     // first build setlist
     // TODO make url conflict with file
-    let req_list: Vec<_> = if let Some(f) = opt.file {
+    let url_set: Vec<_> = if let Some(f) = opt.file {
         let buf = fs::read_to_string(&f)
             .context(ReadConfigFile { path: f })?;
 
-        let url_set = buf.lines()
+        buf.lines()
             .map(|line| {
                 line.parse::<Uri>()
                     .context(ParseUrl { input: line })
             })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let urls = iter::repeat(url_set.clone()).take(opt.n)
-            .flat_map(|url_set| url_set.into_iter())
-            .map(|url| {
-                Request::get(url)
-                    .body(hyper::Body::default())
-                    .expect("Failed building request")
-            })
-            .collect();
-
-        urls
+            .collect::<Result<Vec<_>, _>>()?
     } else {
         let url = opt.url.context(MissingUrl)?;
         let url: Uri = url.parse()
             .context(ParseUrl { input: url })?;
 
-        let urls = iter::repeat(url).take(opt.n);
-        urls.map(|url| {
-                Request::get(url)
-                //.basic_auth(user_pass[0], Some(user_pass[1]))
+        vec![url]
+    };
+
+    let url_set_len = url_set.len();
+
+    let req_list = iter::repeat(url_set).take(opt.n)
+        .flat_map(|url_set| url_set.into_iter())
+        .map(|url| {
+            Request::get(url)
                 .body(hyper::Body::default())
                 .expect("Failed building request")
-            })
-            .collect()
-    };
+        });
 
     // perform calls
     if opt.asynchronous {
-        let tasks = req_list.len();
+        let tasks = url_set_len * opt.n;
         let (tx, mut rx) = tokio::sync::mpsc::channel(tasks);
 
         for req in req_list {
