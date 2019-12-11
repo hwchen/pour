@@ -5,8 +5,8 @@ name = "pour"
 version = "0.1.0"
 
 [dependencies]
+anyhow = "1.0"
 structopt = "0.2.14"
-snafu = "0.5.0"
 hyper = "0.13.0"
 hyper-tls = "0.4.0"
 tokio = { version = "0.2.3", features = ["macros"] }

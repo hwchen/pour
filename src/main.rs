@@ -1,3 +1,4 @@
+use anyhow::{Context, Error};
 use hyper::{
     client::connect::Connection,
     service::Service,
@@ -6,11 +7,12 @@ use hyper::{
     Uri,
 };
 use hyper_tls::HttpsConnector;
-use snafu::{Snafu, ResultExt, OptionExt};
-use std::fs;
-use std::iter;
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::{
+    fs,
+    iter,
+    path::PathBuf,
+    time::Instant,
+};
 use structopt::StructOpt;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -22,8 +24,7 @@ async fn main() -> Result<(), Error> {
         panic!("Cannot repeat 0 times");
     }
 
-    let timeout_sec = opt.timeout;
-        //.timeout(Duration::from_millis(timeout_sec * 1000))
+    let _timeout_sec = opt.timeout;
 
     // Build Client
     let https = HttpsConnector::new();
@@ -34,18 +35,18 @@ async fn main() -> Result<(), Error> {
     // TODO make url conflict with file
     let url_set: Vec<_> = if let Some(f) = opt.file {
         let buf = fs::read_to_string(&f)
-            .context(ReadConfigFile { path: f })?;
+            .with_context(|| format!("Error reading config file {:?}", f))?;
 
         buf.lines()
             .map(|line| {
                 line.parse::<Uri>()
-                    .context(ParseUrl { input: line })
+                    .with_context(|| format!("Error parsing url line {:?}", line))
             })
             .collect::<Result<Vec<_>, _>>()?
     } else {
-        let url = opt.url.context(MissingUrl)?;
+        let url = opt.url.context("Missing url to test")?;
         let url: Uri = url.parse()
-            .context(ParseUrl { input: url })?;
+            .with_context(|| format!("Error parsing url {:?}", url))?;
 
         vec![url]
     };
@@ -88,8 +89,7 @@ async fn main() -> Result<(), Error> {
     } else {
         for req in req_list {
             exec_request(&client, req)
-                .await
-                .context(RequestExec)?;
+                .await?;
         }
     }
 
@@ -143,18 +143,3 @@ struct CliOpt {
     asynchronous: bool,
 }
 
-
-#[derive(Debug, Snafu)]
-pub enum Error {
-    #[snafu(display("Error reading config file {}: {}", path.display(), source))]
-    ReadConfigFile { source: std::io::Error, path: PathBuf},
-
-    #[snafu(display("Missing url to test"))]
-    MissingUrl,
-
-    #[snafu(display("Error parsing url {}: {}", input, source))]
-    ParseUrl { source: hyper::http::uri::InvalidUri, input: String },
-
-    #[snafu(display("Error executing request: {}", source))]
-    RequestExec { source: hyper::Error },
-}
