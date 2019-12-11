@@ -1,4 +1,10 @@
-use hyper::{Client, Request, Uri};
+use hyper::{
+    client::connect::Connection,
+    service::Service,
+    Client,
+    Request,
+    Uri,
+};
 use hyper_tls::HttpsConnector;
 use snafu::{Snafu, ResultExt, OptionExt};
 use std::fs;
@@ -6,6 +12,7 @@ use std::iter;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use structopt::StructOpt;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -19,7 +26,7 @@ async fn main() -> Result<(), Error> {
         //.timeout(Duration::from_millis(timeout_sec * 1000))
 
     // Build Client
-    let https = HttpsConnector::new().expect("Failed to build https connector");
+    let https = HttpsConnector::new();
     let client = Client::builder()
         .build::<_, hyper::Body>(https);
 
@@ -90,7 +97,11 @@ async fn main() -> Result<(), Error> {
 }
 
 async fn exec_request<C>(client: &Client<C, hyper::Body>, req: Request<hyper::Body>) -> Result<(), hyper::Error>
-    where C: hyper::client::connect::Connect + 'static
+    where C: Service<hyper::Uri> + Clone + Send + Sync + 'static,
+        // this is the one that gets around sealed Connect
+        C::Response: Connection + AsyncRead + AsyncWrite + Send + Unpin + 'static,
+        C::Future: Send + Unpin + 'static,
+        C::Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>
 {
     let profile_url = req.uri().to_owned();
 
@@ -142,7 +153,7 @@ pub enum Error {
     MissingUrl,
 
     #[snafu(display("Error parsing url {}: {}", input, source))]
-    ParseUrl { source: http::uri::InvalidUri, input: String },
+    ParseUrl { source: hyper::http::uri::InvalidUri, input: String },
 
     #[snafu(display("Error executing request: {}", source))]
     RequestExec { source: hyper::Error },
